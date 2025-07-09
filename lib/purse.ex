@@ -30,8 +30,14 @@ defmodule Purse do
           {:ok, new_state} ->
             {:ok, new_state}
 
-          {:error, reason} ->
-            {:error, reason}
+          {:error, reason_to} ->
+            case GenServer.call(from_pid, {:deposit, currency, amount}) do
+              {:ok, _new_state} ->
+                {:error, {:cannot_deposit_to_second_wallet, reason_to}}
+
+              {:error, reason_from} ->
+                {:error, {:cannot_deposit_to_first_wallet, reason_to, reason_from}}
+            end
         end
 
       {:error, :not_enough_money} ->
