@@ -3,7 +3,8 @@ defmodule PurseTest do
   doctest Purse
 
   setup do
-    {:ok, purse: Purse.create()}
+    {:ok, pid} = Purse.create()
+    {:ok, purse: pid}
   end
 
   test ".create", %{purse: purse} do
@@ -11,13 +12,13 @@ defmodule PurseTest do
   end
 
   test ".deposit", %{purse: purse} do
-    assert Purse.deposit(purse, "USD", 100) == %{"USD" => 100}
+    assert Purse.deposit(purse, "USD", 100) == {:ok, %{"USD" => 100}}
   end
 
   test ".withdraw", %{purse: purse} do
     Purse.deposit(purse, "USD", 1000)
 
-    assert Purse.withdraw(purse, "USD", 100) == %{"USD" => 900}
+    assert Purse.withdraw(purse, "USD", 100) == {:ok, %{"USD" => 900}}
   end
 
   test ".peek", %{purse: purse} do
@@ -29,7 +30,7 @@ defmodule PurseTest do
   end
 
   test ".transfer", %{purse: purse} do
-    purse2 = Purse.create()
+    {:ok, purse2} = Purse.create()
 
     Purse.deposit(purse, "USD", 1000)
     Purse.deposit(purse, "EUR", 500)
@@ -37,7 +38,7 @@ defmodule PurseTest do
     assert Purse.peek(purse) == [{"EUR", 500}, {"USD", 1000}]
     assert Purse.peek(purse2) == []
 
-    Purse.transfer(purse, purse2, "USD", 100)
+    assert Purse.transfer(purse, purse2, "USD", 100) == {:ok, %{"USD" => 100}}
 
     assert Purse.peek(purse) == [{"EUR", 500}, {"USD", 900}]
     assert Purse.peek(purse2) == [{"USD", 100}]
