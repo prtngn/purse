@@ -1,14 +1,28 @@
 defmodule Purse do
   use GenServer
 
-  defdelegate create, to: Purse.Supervisor, as: :start_child
+  @save_interval_ms Application.compile_env(:purse, :save_interval_ms)
 
-  def start_link(_, _) do
-    GenServer.start_link(__MODULE__, %{})
+  defdelegate create(name), to: Purse.Supervisor, as: :start_child
+
+  def start_link(_, name) do
+    GenServer.start_link(__MODULE__, name)
   end
 
-  def init(_) do
-    {:ok, %{}}
+  def init(name) do
+    table =
+      case File.exists?("#{name}.ets") do
+        true ->
+          {:ok, table} = :ets.file2tab(~c"#{name}.ets")
+          table
+
+        false ->
+          :ets.new(:"#{name}", [:set, :protected])
+      end
+
+    schedule_save()
+
+    {:ok, %{name: name, table: table}}
   end
 
   def deposit(pid, currency, amount) do
@@ -46,27 +60,47 @@ defmodule Purse do
   end
 
   def handle_call({:deposit, currency, amount}, _, state) do
-    new_state = Map.update(state, currency, amount, &(&1 + amount))
+    old_amount = amount(state.table, currency)
+    :ets.update_element(state.table, currency, {2, old_amount + amount}, {currency, 0})
 
-    {:reply, {:ok, new_state}, new_state}
+    {:reply, {:ok, :ets.tab2list(state.table)}, state}
   end
 
   def handle_call({:withdraw, currency, amount}, _, state) do
-    case Map.get(state, currency, 0) do
-      current_balance when current_balance >= amount ->
-        new_state = Map.update(state, currency, amount, &(&1 - amount))
-        {:reply, {:ok, new_state}, new_state}
+    old_amount = amount(state.table, currency)
 
-      _ ->
+    case old_amount >= amount do
+      true ->
+        :ets.update_element(state.table, currency, {2, old_amount - amount})
+        {:reply, {:ok, :ets.tab2list(state.table)}, state}
+
+      false ->
         {:reply, {:error, :not_enough_money}, state}
     end
   end
 
   def handle_call({:peek, nil}, _, state) do
-    {:reply, Map.to_list(state), state}
+    {:reply, :ets.tab2list(state.table), state}
   end
 
   def handle_call({:peek, currency}, _, state) do
-    {:reply, Map.get(state, currency, 0), state}
+    {:reply, :ets.lookup(state.table, currency), state}
   end
+
+  def handle_info(:save, state) do
+    :ets.tab2file(state.table, ~c"#{state.name}.ets")
+
+    schedule_save()
+
+    {:noreply, state}
+  end
+
+  defp amount(table, currency) do
+    case :ets.lookup(table, currency) do
+      [{_, amount}] -> amount
+      _ -> 0
+    end
+  end
+
+  defp schedule_save, do: Process.send_after(self(), :save, @save_interval_ms)
 end

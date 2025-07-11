@@ -5,8 +5,8 @@ defmodule Purse.Supervisor do
     DynamicSupervisor.start_link(__MODULE__, nil, name: __MODULE__)
   end
 
-  def start_child do
-    DynamicSupervisor.start_child(__MODULE__, Purse)
+  def start_child(user_id) do
+    DynamicSupervisor.start_child(__MODULE__, {Purse, user_id})
   end
 
   @impl true
