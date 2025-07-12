@@ -22,7 +22,7 @@ defmodule Purse do
 
     schedule_save()
 
-    {:ok, %{name: name, table: table}}
+    {:ok, %{name: name, table: table, transaction: nil}}
   end
 
   def deposit(pid, currency, amount) do
@@ -38,9 +38,30 @@ defmodule Purse do
   end
 
   def transfer(from_pid, to_pid, currency, amount) do
-    case GenServer.call(from_pid, {:withdraw, currency, amount}) do
+    transaction_ref = make_ref()
+
+    result =
+      case GenServer.call(from_pid, {:transaction, :start, transaction_ref}) do
+        {:ok, _new_state} ->
+          case GenServer.call(to_pid, {:transaction, :start, transaction_ref}) do
+            {:ok, _new_state} -> do_transfer(from_pid, to_pid, transaction_ref, currency, amount)
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    GenServer.call(from_pid, {:transaction, :end, transaction_ref})
+    GenServer.call(to_pid, {:transaction, :end, transaction_ref})
+
+    result
+  end
+
+  def do_transfer(from_pid, to_pid, transaction_ref, currency, amount) do
+    case GenServer.call(from_pid, {:withdraw, currency, amount, transaction_ref}) do
       {:ok, _new_state} ->
-        case GenServer.call(to_pid, {:deposit, currency, amount}) do
+        case GenServer.call(to_pid, {:deposit, currency, amount, transaction_ref}) do
           {:ok, new_state} ->
             {:ok, new_state}
 
@@ -59,24 +80,87 @@ defmodule Purse do
     end
   end
 
-  def handle_call({:deposit, currency, amount}, _, state) do
-    old_amount = amount(state.table, currency)
-    :ets.update_element(state.table, currency, {2, old_amount + amount}, {currency, 0})
+  def handle_call({:transaction, :start, transaction_ref}, _, %{transaction: nil} = state) do
+    new_state = %{state | transaction: transaction_ref}
 
-    {:reply, {:ok, :ets.tab2list(state.table)}, state}
+    {:reply, {:ok, new_state}, new_state}
   end
 
-  def handle_call({:withdraw, currency, amount}, _, state) do
-    old_amount = amount(state.table, currency)
+  def handle_call({:transaction, :start, _transaction_ref}, _, state) do
+    {:reply, {:error, :transaction_already_started}, state}
+  end
 
-    case old_amount >= amount do
-      true ->
-        :ets.update_element(state.table, currency, {2, old_amount - amount})
-        {:reply, {:ok, :ets.tab2list(state.table)}, state}
+  def handle_call({:transaction, :end, transaction_ref}, _, %{transaction: transaction} = state)
+      when transaction != transaction_ref do
+    {:reply, {:error, :wrong_transaction}, state}
+  end
 
-      false ->
-        {:reply, {:error, :not_enough_money}, state}
-    end
+  def handle_call({:transaction, :end, _transaction_ref}, _, %{transaction: nil} = state) do
+    {:reply, {:error, :transaction_not_started}, state}
+  end
+
+  def handle_call({:transaction, :end, _transaction_ref}, _, state) do
+    new_state = %{state | transaction: nil}
+
+    {:reply, {:ok, new_state}, new_state}
+  end
+
+  def handle_call(
+        {:deposit, _currency, _amount, _transaction_ref},
+        _,
+        %{transaction: nil} = state
+      ) do
+    {:reply, {:error, :transaction_not_started}, state}
+  end
+
+  def handle_call(
+        {:deposit, _currency, _amount, transaction_ref},
+        _,
+        %{transaction: transaction} = state
+      )
+      when transaction != transaction_ref do
+    {:reply, {:error, :wrong_transaction}, state}
+  end
+
+  def handle_call({:deposit, currency, amount, _transaction_ref}, _, state) do
+    do_deposit(state, currency, amount)
+  end
+
+  def handle_call({:deposit, currency, amount}, _, %{transaction: nil} = state) do
+    do_deposit(state, currency, amount)
+  end
+
+  def handle_call({:deposit, _currency, _amount}, _, state) do
+    {:reply, {:error, :wallet_is_in_transaction}, state}
+  end
+
+  def handle_call(
+        {:withdraw, _currency, _amount, _transaction_ref},
+        _,
+        %{transaction: nil} = state
+      ) do
+    {:reply, {:error, :transaction_not_started}, state}
+  end
+
+  def handle_call(
+        {:withdraw, _currency, _amount, transaction_ref},
+        _,
+        %{transaction: transaction} = state
+      )
+      when transaction != transaction_ref do
+    {:reply, {:error, :wrong_transaction}, state}
+  end
+
+  def handle_call({:withdraw, currency, amount, _transaction_ref}, _, state) do
+    do_withdraw(state, currency, amount)
+  end
+
+  def handle_call({:withdraw, currency, amount}, _, %{transaction: nil} = state) do
+    do_withdraw(state, currency, amount)
+  end
+
+  def handle_call({:withdraw, _currency, _amount}, _, state) do
+    {:reply, {:error, :wallet_is_in_transaction}, state}
   end
 
   def handle_call({:peek, nil}, _, state) do
@@ -93,6 +177,26 @@ defmodule Purse do
     schedule_save()
 
     {:noreply, state}
+  end
+
+  defp do_deposit(state, currency, amount) do
+    old_amount = amount(state.table, currency)
+    :ets.update_element(state.table, currency, {2, old_amount + amount}, {currency, 0})
+
+    {:reply, {:ok, :ets.tab2list(state.table)}, state}
+  end
+
+  defp do_withdraw(state, currency, amount) do
+    old_amount = amount(state.table, currency)
+
+    case old_amount >= amount do
+      true ->
+        :ets.update_element(state.table, currency, {2, old_amount - amount})
+        {:reply, {:ok, :ets.tab2list(state.table)}, state}
+
+      false ->
+        {:reply, {:error, :not_enough_money}, state}
+    end
   end
 
   defp amount(table, currency) do
